@@ -252,7 +252,7 @@ def _header(title: str) -> None:
 class PreFlightChecks(InstallStep):
     """Verifica pré-condições: não root, internet disponível."""
 
-    label = "1/12 — Verificações iniciais"
+    label = "1/18 — Verificações iniciais"
 
     def execute(self) -> None:
         if os.geteuid() == 0:
@@ -272,7 +272,7 @@ class PreFlightChecks(InstallStep):
 class RepositorySetup(InstallStep):
     """Configura EPEL, CRB, RPM Fusion e Flathub."""
 
-    label = "2/12 — Repositórios (EPEL, CRB, RPM Fusion, Flathub)"
+    label = "2/18 — Repositórios (EPEL, CRB, RPM Fusion, Flathub)"
 
     def execute(self) -> None:
         self._setup_epel()
@@ -334,7 +334,7 @@ class RepositorySetup(InstallStep):
 class SystemUpdate(InstallStep):
     """Atualização completa do sistema."""
 
-    label = "3/12 — Atualização do sistema"
+    label = "3/18 — Atualização do sistema"
 
     def execute(self) -> None:
         self.info("Executando dnf upgrade --refresh (pode demorar)...")
@@ -347,15 +347,15 @@ class SystemUpdate(InstallStep):
 class BaseToolsInstaller(InstallStep):
     """Ferramentas base de CLI, ZSH, git e utilitários."""
 
-    label = "4/12 — Ferramentas base (CLI, ZSH, git)"
+    label = "4/18 — Ferramentas base (CLI, ZSH, git)"
 
     PACKAGES = [
         "htop", "btop", "bat", "eza", "fd-find", "ripgrep", "fzf", "zoxide",
         "tmux", "ncdu", "neofetch", "stow", "git", "zsh",
         "curl", "wget", "unzip", "jq", "make", "gcc", "gcc-c++",
         "gnome-tweaks", "dconf-editor",
-        "firewalld", "timeshift", "rclone",
-        "earlyoom", "irqbalance",
+        "firewalld", "rclone",
+        "earlyoom", "irqbalance", "preload",
         "neovim", "python3", "python3-pip",
     ]
 
@@ -374,7 +374,7 @@ class BaseToolsInstaller(InstallStep):
             self.warn(f"Alguns pacotes falharam: {exc}")
 
     def _enable_services(self) -> None:
-        for service in ("earlyoom", "irqbalance"):
+        for service in ("earlyoom", "irqbalance", "preload"):
             try:
                 run(["sudo", "systemctl", "enable", "--now", service])
                 self.ok(f"{service} ativado")
@@ -415,9 +415,9 @@ class BaseToolsInstaller(InstallStep):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class KernelTuning(InstallStep):
-    """Parâmetros sysctl de performance e configuração de swap."""
+    """Parâmetros sysctl de performance, THP, NVMe scheduler, fstrim."""
 
-    label = "5/12 — Tuning de kernel e performance"
+    label = "5/18 — Tuning de kernel e I/O (sysctl, THP, NVMe)"
 
     SYSCTL_CONF = Path("/etc/sysctl.d/99-zennit-java-dev.conf")
 
@@ -436,23 +436,27 @@ class KernelTuning(InstallStep):
         fs.inotify.max_user_watches = 524288
         # Aumenta limite de aberturas de arquivo para servidores Java
         fs.file-max = 2097152
+        # Segurança adicional
+        kernel.kptr_restrict = 2
+        kernel.dmesg_restrict = 1
     """)
+
+    THP_TMPFILE = Path("/etc/tmpfiles.d/thp.conf")
+    THP_CONTENT = "w /sys/kernel/mm/transparent_hugepage/enabled - - - - madvise\n"
+    UDEV_RULE = Path("/etc/udev/rules.d/60-nvme-scheduler.rules")
+    UDEV_CONTENT = 'ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/scheduler}="kyber"\n'
 
     def execute(self) -> None:
         self._write_sysctl()
         self._apply_sysctl()
-        self._setup_tuned()
+        self._setup_transparent_hugepage()
+        self._setup_nvme_scheduler()
+        self._setup_fstrim()
         self._setup_limits()
 
     def _write_sysctl(self) -> None:
         self.info("Escrevendo parâmetros sysctl...")
-        result = run(
-            ["sudo", "tee", str(self.SYSCTL_CONF)],
-            check=False,
-        )
-        run_shell(
-            f"echo '{self.SYSCTL_PARAMS}' | sudo tee {self.SYSCTL_CONF} > /dev/null"
-        )
+        run_shell(f"echo '{self.SYSCTL_PARAMS}' | sudo tee {self.SYSCTL_CONF} > /dev/null")
         self.ok(f"Arquivo {self.SYSCTL_CONF} criado")
 
     def _apply_sysctl(self) -> None:
@@ -462,17 +466,45 @@ class KernelTuning(InstallStep):
         except CommandError as exc:
             self.warn(f"sysctl --system falhou: {exc}")
 
-    def _setup_tuned(self) -> None:
+    def _setup_transparent_hugepage(self) -> None:
+        self.info("Configurando Transparent HugePage para madvise (JVM)...")
+        run_shell("echo madvise | sudo tee /sys/kernel/mm/transparent_hugepage/enabled > /dev/null")
+        run_shell(f"echo '{self.THP_CONTENT}' | sudo tee {self.THP_TMPFILE} > /dev/null")
+        self.ok("Transparent HugePage configurado para madvise (JVM)")
+
+    def _setup_nvme_scheduler(self) -> None:
+        self.info("Verificando scheduler NVMe...")
+        nvme_dev = None
+        for dev in Path("/sys/block").iterdir():
+            if dev.name.startswith("nvme"):
+                nvme_dev = dev.name
+                break
+        if not nvme_dev:
+            self.info("Nenhum dispositivo NVMe encontrado — pulando")
+            return
+
+        sched_file = f"/sys/block/{nvme_dev}/queue/scheduler"
         try:
-            dnf("tuned", "powertop")
-            run(["sudo", "systemctl", "enable", "--now", "tuned"])
-            run(["sudo", "tuned-adm", "profile", TUNED_PROFILE])
-            self.ok(f"tuned ativo com perfil '{TUNED_PROFILE}'")
-        except CommandError as exc:
-            self.warn(f"tuned falhou: {exc}")
+            current = Path(sched_file).read_text().strip()
+        except Exception:
+            self.warn("Não foi possível ler scheduler NVMe")
+            return
+
+        if "[none]" in current or "[kyber]" in current:
+            self.ok(f"Scheduler {nvme_dev} já otimizado: {current}")
+        else:
+            run_shell(f"echo kyber | sudo tee {sched_file} > /dev/null")
+            self.ok(f"Scheduler {nvme_dev} alterado para kyber")
+
+        run_shell(f"echo '{self.UDEV_CONTENT}' | sudo tee {self.UDEV_RULE} > /dev/null")
+        self.ok("Regra udev para scheduler NVMe criada")
+
+    def _setup_fstrim(self) -> None:
+        self.info("Ativando fstrim.timer para TRIM semanal...")
+        run(["sudo", "systemctl", "enable", "--now", "fstrim.timer"])
+        self.ok("fstrim.timer ativado")
 
     def _setup_limits(self) -> None:
-        """Aumenta limites de arquivo para JVMs em /etc/security/limits.conf."""
         limits_entry = (
             "\n# Zennit-OS — limites para Java\n"
             "* soft nofile 65536\n"
@@ -488,19 +520,177 @@ class KernelTuning(InstallStep):
 
 # ──────────────────────────────────────────────────────────────────────────────
 
+class ZramSetup(InstallStep):
+    """Configura ZRAM como swap comprimido em RAM (50% da RAM, zstd)."""
+
+    label = "6/18 — ZRAM (swap comprimido em RAM)"
+
+    ZRAM_CONF = Path("/etc/systemd/zram-generator.conf")
+
+    def execute(self) -> None:
+        self._install_zram_generator()
+        self._configure_zram()
+        self._check_disk_swap()
+
+    def _install_zram_generator(self) -> None:
+        self.info("Instalando zram-generator...")
+        try:
+            dnf("zram-generator")
+            self.ok("zram-generator instalado")
+        except CommandError as exc:
+            self.warn(f"zram-generator falhou: {exc}")
+
+    def _configure_zram(self) -> None:
+        if self.ZRAM_CONF.exists():
+            self.ok("Configuração ZRAM já existe")
+            return
+        self.info("Criando configuração do ZRAM...")
+        config = textwrap.dedent("""\
+            [zram0]
+            zram-size = ram / 2
+            compression-algorithm = zstd
+            swap-priority = 100
+        """)
+        run_shell(f"echo '{config}' | sudo tee {self.ZRAM_CONF} > /dev/null")
+        self.ok("ZRAM configurado (50% RAM, zstd, prioridade 100)")
+        run(["sudo", "systemctl", "daemon-reload"])
+
+    def _check_disk_swap(self) -> None:
+        result = run(["swapon", "--show"], capture=True, check=False)
+        if result.stdout.strip():
+            if any(("swapfile" in line or "/dev/" in line) for line in result.stdout.splitlines()):
+                self.warn("Swap em disco detectado. Considere removê-lo para priorizar ZRAM.")
+                self.info("Execute: sudo swapoff <swap> && sudo rm <swapfile>")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+
+class CpuPowerManagement(InstallStep):
+    """CPU: amd_pstate, tuned, auto-cpufreq, desativa power-profiles-daemon."""
+
+    label = "7/18 — CPU: AMD pstate + tuned + auto-cpufreq"
+
+    def execute(self) -> None:
+        self._configure_amd_pstate()
+        self._setup_tuned()
+        self._setup_auto_cpufreq()
+        self._disable_power_profiles_daemon()
+
+    def _configure_amd_pstate(self) -> None:
+        result = run_shell(
+            "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_driver 2>/dev/null || echo unknown",
+            capture=True, check=False,
+        )
+        driver = result.stdout.strip() if result.returncode == 0 else "unknown"
+        if driver == "amd_pstate_epp":
+            self.ok(f"amd_pstate_epp já ativo ({driver})")
+            return
+
+        self.info(f"Driver atual: {driver} — tentando ativar amd_pstate=active")
+        grub_file = Path("/etc/default/grub")
+        if not grub_file.exists():
+            self.warn("Arquivo /etc/default/grub não encontrado. Adicione amd_pstate=active manualmente.")
+            return
+
+        content = grub_file.read_text()
+        if "amd_pstate=active" in content:
+            self.ok("amd_pstate=active já presente no GRUB")
+            return
+
+        self.info("Adicionando amd_pstate=active ao GRUB...")
+        new_content = content.replace(
+            'GRUB_CMDLINE_LINUX="', 'GRUB_CMDLINE_LINUX="amd_pstate=active '
+        )
+        run_shell(f"echo '{new_content}' | sudo tee {grub_file} > /dev/null")
+        run(["sudo", "grub2-mkconfig", "-o", "/boot/grub2/grub.cfg"])
+        self.ok("amd_pstate=active adicionado ao GRUB (efeito após reboot)")
+
+    def _setup_tuned(self) -> None:
+        if not command_exists("tuned-adm"):
+            self.info("Instalando tuned...")
+            dnf("tuned", "powertop")
+        run(["sudo", "systemctl", "enable", "--now", "tuned"])
+        run(["sudo", "tuned-adm", "profile", TUNED_PROFILE])
+        self.ok(f"tuned ativo com perfil '{TUNED_PROFILE}'")
+
+    def _setup_auto_cpufreq(self) -> None:
+        if command_exists("auto-cpufreq"):
+            self.ok("auto-cpufreq já instalado")
+        else:
+            self.info("Instalando auto-cpufreq...")
+            try:
+                dnf("auto-cpufreq")
+                self.ok("auto-cpufreq instalado via dnf")
+            except CommandError:
+                self.warn("auto-cpufreq não disponível via dnf. Instale manualmente se desejar.")
+                return
+
+        result = run(["sudo", "auto-cpufreq", "--install"], check=False)
+        if result.returncode == 0:
+            self.ok("auto-cpufreq instalado como serviço")
+        else:
+            self.warn("auto-cpufreq --install pode já estar configurado")
+
+    def _disable_power_profiles_daemon(self) -> None:
+        result = run(
+            ["sudo", "systemctl", "disable", "--now", "power-profiles-daemon"],
+            check=False,
+        )
+        if result.returncode == 0:
+            self.ok("power-profiles-daemon desativado")
+        else:
+            self.info("power-profiles-daemon já estava desativado")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PowertopAutoTune(InstallStep):
+    """Cria e ativa serviço powertop --auto-tune no boot."""
+
+    label = "8/18 — Energia: powertop auto-tune"
+
+    SERVICE_FILE = Path("/etc/systemd/system/powertop.service")
+    SERVICE_CONTENT = textwrap.dedent("""\
+        [Unit]
+        Description=PowerTop auto-tune — AMD notebook power savings
+        After=multi-user.target
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/sbin/powertop --auto-tune
+        RemainAfterExit=yes
+
+        [Install]
+        WantedBy=multi-user.target
+    """)
+
+    def execute(self) -> None:
+        if not command_exists("powertop"):
+            self.warn("powertop não encontrado. Instale o pacote primeiro.")
+            return
+
+        self.info("Criando serviço powertop...")
+        run_shell(f"echo '{self.SERVICE_CONTENT}' | sudo tee {self.SERVICE_FILE} > /dev/null")
+        run(["sudo", "systemctl", "daemon-reload"])
+        run(["sudo", "systemctl", "enable", "--now", "powertop.service"])
+        self.ok("powertop.service criado e ativado")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+
 class JavaBackendInstaller(InstallStep):
     """Instala o ecossistema Java Backend: SDKMan, Java, Maven, Gradle, Quarkus CLI."""
 
-    label = "6/12 — Java Backend (SDKMan, Java 21, Maven, Gradle, Quarkus)"
+    label = "9/18 — Java Backend (SDKMan, Java 21, Maven, Gradle, Quarkus)"
 
     SDKMAN_INIT = Path.home() / ".sdkman" / "bin" / "sdkman-init.sh"
 
     SDK_PACKAGES = [
         ("java",   JAVA_VERSION),
-        ("java",   "17-tem"),      # LTS anterior — útil para compatibilidade
+        ("java",   "17-tem"),
         ("maven",  ""),
         ("gradle", ""),
-        ("quarkus",""),            # Quarkus CLI
+        ("quarkus",""),
     ]
 
     def execute(self) -> None:
@@ -510,7 +700,6 @@ class JavaBackendInstaller(InstallStep):
         self._install_build_tools_native()
 
     def _install_deps(self) -> None:
-        """Dependências nativas necessárias para compilar extensões."""
         self.info("Instalando dependências nativas...")
         try:
             dnf(
@@ -533,7 +722,6 @@ class JavaBackendInstaller(InstallStep):
             self.warn(f"SDKMan falhou: {exc}")
 
     def _sdk_cmd(self, *args: str) -> bool:
-        """Executa um comando sdk dentro do shell que carrega o sdkman-init.sh."""
         if not self.SDKMAN_INIT.exists():
             return False
         init = str(self.SDKMAN_INIT)
@@ -551,12 +739,10 @@ class JavaBackendInstaller(InstallStep):
             else:
                 self.warn(f"{label} pode já estar instalado ou falhou")
 
-        # Define Java 21 como padrão
         self._sdk_cmd("default", "java", JAVA_VERSION)
         self.ok(f"Java {JAVA_VERSION} definido como padrão")
 
     def _install_build_tools_native(self) -> None:
-        """Verifica ferramentas de build nativas como fallback."""
         if not command_exists("mvn"):
             self.warn("Maven não encontrado no PATH após SDKMan. Verifique sua sessão.")
         else:
@@ -568,7 +754,7 @@ class JavaBackendInstaller(InstallStep):
 class DockerInstaller(InstallStep):
     """Instala Docker CE e configura firewall."""
 
-    label = "7/12 — Docker CE + Compose"
+    label = "10/18 — Docker CE + Compose"
 
     def execute(self) -> None:
         if command_exists("docker"):
@@ -618,13 +804,13 @@ class DockerInstaller(InstallStep):
 class DatabaseToolsInstaller(InstallStep):
     """Instala ferramentas de banco de dados: DBeaver, clientes CLI."""
 
-    label = "8/12 — Ferramentas de banco de dados"
+    label = "11/18 — Ferramentas de banco de dados"
 
     CLI_PACKAGES = [
-        "postgresql",      # cliente psql
-        "mysql",           # cliente mysql/mariadb
-        "redis",           # redis-cli
-        "sqlite",          # sqlite3
+        "postgresql",
+        "mysql",
+        "redis",
+        "sqlite",
     ]
 
     def execute(self) -> None:
@@ -654,7 +840,7 @@ class DatabaseToolsInstaller(InstallStep):
 class IdeToolsInstaller(InstallStep):
     """Instala IDEs e ferramentas de desenvolvimento: VS Code, IntelliJ, etc."""
 
-    label = "9/12 — IDEs e ferramentas de desenvolvimento"
+    label = "12/18 — IDEs e ferramentas de desenvolvimento"
 
     FLATPAK_TOOLS = [
         ("com.visualstudio.code",           "VS Code"),
@@ -677,7 +863,6 @@ class IdeToolsInstaller(InstallStep):
                 self.warn(f"{name} falhou: {exc}")
 
     def _install_intellij(self) -> None:
-        """IntelliJ IDEA Community via JetBrains Toolbox (Flatpak) ou diretamente."""
         self.info("Instalando IntelliJ IDEA Community...")
         try:
             flatpak_install("com.jetbrains.IntelliJ-IDEA-Community")
@@ -689,7 +874,6 @@ class IdeToolsInstaller(InstallStep):
             )
 
     def _install_uv(self) -> None:
-        """uv — gerenciador Python ultrarrápido (usado no Neovim LSP)."""
         if command_exists("uv"):
             self.ok("uv já instalado")
             return
@@ -706,7 +890,7 @@ class IdeToolsInstaller(InstallStep):
 class FontInstaller(InstallStep):
     """Instala Nerd Fonts (FiraCode, JetBrainsMono) e MS Core Fonts."""
 
-    label = "10/12 — Fontes (Nerd Fonts + MS Core)"
+    label = "13/18 — Fontes (Nerd Fonts + MS Core)"
 
     FONT_DIR = Path.home() / ".local" / "share" / "fonts"
 
@@ -766,10 +950,283 @@ class FontInstaller(InstallStep):
 
 # ──────────────────────────────────────────────────────────────────────────────
 
+class GnomeThemeSetup(InstallStep):
+    """Tema Fluent Blue Dark + ícones + Folder Color."""
+
+    label = "14/18 — Tema Fluent Blue Dark + ícones"
+
+    THEME_DIR = Path.home() / ".local" / "share" / "themes"
+    ICON_DIR  = Path.home() / ".local" / "share" / "icons"
+
+    def execute(self) -> None:
+        self._install_dependencies()
+        self._install_fluent_gtk_theme()
+        self._install_fluent_icon_theme()
+        self._install_folder_color()
+        self._apply_gnome_settings()
+        self._apply_flatpak_overrides()
+
+    def _install_dependencies(self) -> None:
+        self.info("Instalando dependências para temas...")
+        try:
+            dnf("git", "unzip", "python3-setuptools", "python3-pip")
+            self.ok("Dependências de tema instaladas")
+        except CommandError as exc:
+            self.warn(f"Algumas dependências podem já estar presentes: {exc}")
+
+    def _install_fluent_gtk_theme(self) -> None:
+        if (self.THEME_DIR / "Fluent-Dark").exists():
+            self.ok("Fluent GTK Theme já presente")
+            return
+        self.info("Clonando e instalando Fluent GTK Theme...")
+        tmp_dir = Path("/tmp/fluent-gtk-theme")
+        try:
+            run(["git", "clone", "--depth=1",
+                 "https://github.com/vinceliuice/Fluent-gtk-theme", str(tmp_dir)])
+            run_shell(
+                f"./install.sh --dest {self.THEME_DIR} --name Fluent --theme default "
+                "--color dark --size standard --tweaks blur round --icon fedora --libadwaita",
+                cwd=tmp_dir,
+            )
+            self.ok("Fluent GTK Theme instalado")
+        except CommandError as exc:
+            self.warn(f"Fluent GTK Theme falhou: {exc}")
+
+    def _install_fluent_icon_theme(self) -> None:
+        if (self.ICON_DIR / "Fluent-dark").exists():
+            self.ok("Fluent Icon Theme já presente")
+            return
+        self.info("Clonando e instalando Fluent Icon Theme...")
+        tmp_dir = Path("/tmp/fluent-icon-theme")
+        try:
+            run(["git", "clone", "--depth=1",
+                 "https://github.com/vinceliuice/Fluent-icon-theme", str(tmp_dir)])
+            run_shell(
+                f"./install.sh --dest {self.ICON_DIR} --theme default --color dark",
+                cwd=tmp_dir,
+            )
+            self.ok("Fluent Icon Theme instalado")
+        except CommandError as exc:
+            self.warn(f"Fluent Icon Theme falhou: {exc}")
+
+    def _install_folder_color(self) -> None:
+        if command_exists("folder-color"):
+            self.ok("Folder Color já instalado")
+            return
+        self.info("Instalando Folder Color (pastas coloridas)...")
+        tmp_dir = Path("/tmp/folder-color")
+        try:
+            run(["git", "clone", "--depth=1",
+                 "https://github.com/costales/folder-color", str(tmp_dir)])
+            run(["python3", "setup.py", "install", "--prefix", str(Path.home() / ".local")],
+                cwd=tmp_dir, check=False)
+            # Reiniciar Nautilus se estiver rodando
+            run(["nautilus", "-q"], check=False)
+            self.ok("Folder Color instalado")
+        except CommandError as exc:
+            self.warn(f"Folder Color falhou: {exc}")
+
+    def _apply_gnome_settings(self) -> None:
+        self.info("Aplicando configurações GNOME...")
+        settings = [
+            ("org.gnome.desktop.interface", "gtk-theme", "Fluent-Dark"),
+            ("org.gnome.desktop.interface", "icon-theme", "Fluent-dark"),
+            ("org.gnome.desktop.interface", "color-scheme", "prefer-dark"),
+            ("org.gnome.desktop.wm.preferences", "theme", "Fluent-Dark"),
+            ("org.gnome.desktop.interface", "monospace-font-name", "FiraCode Nerd Font 11"),
+        ]
+        for schema, key, value in settings:
+            run(["gsettings", "set", schema, key, value], check=False)
+        self.ok("Tema e fontes aplicados")
+
+    def _apply_flatpak_overrides(self) -> None:
+        self.info("Configurando Flatpak para enxergar os temas...")
+        run(["sudo", "flatpak", "override", "--filesystem=" + str(self.THEME_DIR)], check=False)
+        run(["sudo", "flatpak", "override", "--filesystem=" + str(self.ICON_DIR)], check=False)
+        run(["sudo", "flatpak", "override", "--env=GTK_THEME=Fluent-Dark"], check=False)
+        run(["sudo", "flatpak", "override", "--env=ICON_THEME=Fluent-dark"], check=False)
+        self.ok("Overrides Flatpak aplicados")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+
+class WallpaperSetup(InstallStep):
+    """Wallpaper dinâmico Firewatch (nativo GNOME)."""
+
+    label = "15/18 — Wallpaper Firewatch Dinâmico"
+
+    WP_DIR   = Path.home() / ".local" / "share" / "backgrounds" / "firewatch"
+    PROP_DIR = Path.home() / ".local" / "share" / "gnome-background-properties"
+
+    IMAGES = [f"https://raw.githubusercontent.com/adi1090x/dynamic-wallpaper/master/images/firewatch/firewatch_{i}.jpg" for i in range(1, 5)]
+
+    def execute(self) -> None:
+        self._create_directories()
+        self._download_images()
+        self._create_wallpaper_xml()
+        self._create_properties_xml()
+
+    def _create_directories(self) -> None:
+        self.WP_DIR.mkdir(parents=True, exist_ok=True)
+        self.PROP_DIR.mkdir(parents=True, exist_ok=True)
+        self.ok("Diretórios de wallpaper criados")
+
+    def _download_images(self) -> None:
+        self.info("Baixando imagens do Firewatch...")
+        for url in self.IMAGES:
+            filename = Path(url).name
+            dest = self.WP_DIR / filename
+            if dest.exists():
+                continue
+            try:
+                run(["curl", "-fLo", str(dest), url])
+                self.ok(f"{filename} baixada")
+            except CommandError as exc:
+                self.warn(f"Falha ao baixar {filename}: {exc}")
+
+    def _create_wallpaper_xml(self) -> None:
+        xml_content = textwrap.dedent(f"""\
+            <background>
+              <starttime>
+                <year>2026</year><month>01</month><day>01</day>
+                <hour>00</hour><minute>00</minute><second>00</second>
+              </starttime>
+              <static><duration>21600.0</duration><file>{self.WP_DIR}/firewatch_4.jpg</file></static>
+              <transition><duration>3600.0</duration><from>{self.WP_DIR}/firewatch_4.jpg</from><to>{self.WP_DIR}/firewatch_1.jpg</to></transition>
+              <static><duration>32400.0</duration><file>{self.WP_DIR}/firewatch_1.jpg</file></static>
+              <transition><duration>3600.0</duration><from>{self.WP_DIR}/firewatch_1.jpg</from><to>{self.WP_DIR}/firewatch_2.jpg</to></transition>
+              <static><duration>3600.0</duration><file>{self.WP_DIR}/firewatch_2.jpg</file></static>
+              <transition><duration>3600.0</duration><from>{self.WP_DIR}/firewatch_2.jpg</from><to>{self.WP_DIR}/firewatch_3.jpg</to></transition>
+              <static><duration>10800.0</duration><file>{self.WP_DIR}/firewatch_3.jpg</file></static>
+              <transition><duration>3600.0</duration><from>{self.WP_DIR}/firewatch_3.jpg</from><to>{self.WP_DIR}/firewatch_4.jpg</to></transition>
+            </background>
+        """)
+        xml_file = self.WP_DIR / "firewatch.xml"
+        xml_file.write_text(xml_content)
+        self.ok("firewatch.xml criado")
+
+    def _create_properties_xml(self) -> None:
+        prop_content = textwrap.dedent(f"""\
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE wallpapers SYSTEM "gnome-wp-list.dtd">
+            <wallpapers>
+              <wallpaper deleted="false">
+                <name>Firewatch Dinâmico</name>
+                <filename>{self.WP_DIR}/firewatch.xml</filename>
+                <options>zoom</options>
+              </wallpaper>
+            </wallpapers>
+        """)
+        prop_file = self.PROP_DIR / "firewatch.xml"
+        prop_file.write_text(prop_content)
+        self.ok("Propriedades do wallpaper registradas (aparecerá nas configurações)")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+
+class GnomeExtensionsSetup(InstallStep):
+    """Instala e habilita extensões GNOME via API."""
+
+    label = "16/18 — Extensões GNOME"
+
+    EXT_DIR = Path.home() / ".local" / "share" / "gnome-shell" / "extensions"
+    EXTENSIONS = [
+        ("dash-to-dock@micxgx.gmail.com",              "dash-to-dock"),
+        ("appindicatorsupport@rgcjonas.gmail.com",      "appindicator"),
+        ("caffeine@patapon.info",                       "caffeine"),
+        ("compiz-alike-magic-lamp-effect@hermes81.github.com", "magic-lamp"),
+        ("add-to-desktop@bobsilverberg",                "add-to-desktop"),
+        ("ding@rastersoft.com",                         "desktop-icons"),
+        ("blur-my-shell@aunetx",                        "blur-my-shell"),
+    ]
+
+    def execute(self) -> None:
+        self._install_deps()
+        self._install_extensions()
+        self._enable_extensions()
+
+    def _install_deps(self) -> None:
+        try:
+            dnf("unzip", "jq", "gnome-shell-extension-common")
+        except CommandError:
+            self.warn("Algumas dependências de extensão já podem estar presentes")
+
+    def _get_gnome_shell_version(self) -> str:
+        result = run(["gnome-shell", "--version"], capture=True, check=False)
+        if result.returncode == 0:
+            # output: "GNOME Shell 40.4" — extrair número
+            parts = result.stdout.strip().split()
+            if len(parts) >= 3:
+                return parts[2].split(".")[0]
+        # fallback: tentar via pkg-config ou retornar valor padrão
+        self.warn("Não foi possível detectar versão do GNOME Shell, usando fallback 40")
+        return "40"
+
+    def _install_extensions(self) -> None:
+        self.EXT_DIR.mkdir(parents=True, exist_ok=True)
+        shell_ver = self._get_gnome_shell_version()
+
+        for uuid, _ in self.EXTENSIONS:
+            if (self.EXT_DIR / uuid).exists():
+                self.ok(f"Extensão {uuid} já instalada")
+                continue
+
+            self.info(f"Instalando extensão: {uuid}...")
+            # Tentar obter URL de download via API
+            try:
+                # Primeiro, consulta com search
+                query_url = f"https://extensions.gnome.org/extension-query/?search={uuid.split('@')[0]}"
+                result = run(["curl", "-s", query_url], capture=True, check=False)
+                download_url = None
+                if result.returncode == 0:
+                    import json
+                    data = json.loads(result.stdout)
+                    for ext in data.get("extensions", []):
+                        if ext.get("uuid") == uuid:
+                            version_map = ext.get("shell_version_map", {})
+                            download_url = version_map.get(shell_ver, {}).get("download_url")
+                            if not download_url:
+                                # fallback: pegar o primeiro disponível
+                                for ver, info in version_map.items():
+                                    download_url = info.get("download_url")
+                                    break
+                            break
+                if not download_url:
+                    # Tentar endpoint de info direta
+                    info_result = run(
+                        ["curl", "-s", f"https://extensions.gnome.org/extension-info/?uuid={uuid}"],
+                        capture=True, check=False,
+                    )
+                    if info_result.returncode == 0:
+                        ext_info = json.loads(info_result.stdout)
+                        download_url = ext_info.get("download_url")
+
+                if download_url and download_url != "null":
+                    zip_path = f"/tmp/{uuid}.zip"
+                    run(["curl", "-sL", f"https://extensions.gnome.org{download_url}", "-o", zip_path])
+                    dest_dir = self.EXT_DIR / uuid
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    run(["unzip", "-q", zip_path, "-d", str(dest_dir)])
+                    Path(zip_path).unlink(missing_ok=True)
+                    self.ok(f"Extensão {uuid} instalada")
+                else:
+                    self.warn(f"URL de download não encontrada para {uuid}")
+            except Exception as exc:
+                self.warn(f"Falha ao instalar {uuid}: {exc}")
+
+    def _enable_extensions(self) -> None:
+        uuids = [uuid for uuid, _ in self.EXTENSIONS]
+        enabled_list = str(uuids).replace("'", '"')
+        run(["gsettings", "set", "org.gnome.shell", "enabled-extensions", enabled_list], check=False)
+        self.ok("Extensões habilitadas no GNOME")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+
 class DotfilesSetup(InstallStep):
     """Clona e aplica dotfiles via GNU Stow."""
 
-    label = "11/12 — Dotfiles e ZSH config"
+    label = "17/18 — Dotfiles e ZSH config"
 
     DOTFILES_REPO = "https://github.com/Symos001/Symos-dotfiles.git"
     DOTFILES_DIR  = Path.home() / ".dotfiles"
@@ -859,7 +1316,6 @@ class DotfilesSetup(InstallStep):
                 self.info("Plugins tmux: rode prefix+I na primeira sessão")
 
     def _patch_zshrc(self) -> None:
-        """Adiciona bloco de paths ao .zshrc sem duplicar."""
         zshrc_text = self.ZSHRC.read_text(encoding="utf-8") if self.ZSHRC.exists() else ""
         if "zennit-os — Java Backend paths" in zshrc_text:
             self.ok(".zshrc já possui os paths do Zennit-OS")
@@ -874,7 +1330,7 @@ class DotfilesSetup(InstallStep):
 class DisableUnnecessaryServices(InstallStep):
     """Desativa serviços desnecessários para reduzir boot time."""
 
-    label = "12/12 — Desativando serviços lentos"
+    label = "18/18 — Desativando serviços lentos"
 
     SERVICES_TO_DISABLE = [
         "NetworkManager-wait-online.service",
@@ -892,6 +1348,9 @@ class DisableUnnecessaryServices(InstallStep):
                 self.ok(f"{service} desativado")
             else:
                 self.info(f"{service} já estava desativado ou não existe")
+        result = run(["systemd-analyze"], capture=True, check=False)
+        if result.returncode == 0:
+            log.info(f"Tempo de boot: {result.stdout.strip()}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -915,18 +1374,23 @@ class PostInstallOrchestrator:
             SystemUpdate(),
             BaseToolsInstaller(),
             KernelTuning(),
+            ZramSetup(),
+            CpuPowerManagement(),
+            PowertopAutoTune(),
             JavaBackendInstaller(),
             DockerInstaller(),
             DatabaseToolsInstaller(),
             IdeToolsInstaller(),
             FontInstaller(),
+            GnomeThemeSetup(),
+            WallpaperSetup(),
+            GnomeExtensionsSetup(),
             DotfilesSetup(),
             DisableUnnecessaryServices(),
         ]
         self.results: list[StepResult] = []
 
     def run(self) -> int:
-        """Executa todos os passos e retorna exit code (0 = OK, 1 = erros)."""
         print(self.BANNER)
         log.info("Log completo em: %s", LOGFILE)
 
@@ -936,7 +1400,6 @@ class PostInstallOrchestrator:
             result = step.run()
             self.results.append(result)
 
-            # PreFlightChecks com falha crítica interrompe tudo
             if isinstance(step, PreFlightChecks) and result.status == StepStatus.FAILED:
                 log.error("Pré-condições não atendidas. Abortando.")
                 self._print_summary(elapsed=datetime.now() - start)
