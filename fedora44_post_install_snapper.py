@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # =============================================================================
-# post_install_fedora44_java.py — Zennit-OS para Fedora 44 (btrfs)
-# Ambiente de desenvolvimento Java Backend com orientação a objetos
-# Inclui Snapper (snapshots automáticos) e todas as otimizações
+#  post_install_fedora44_java.py — Zennit-OS para Fedora 44 (btrfs)
+#  Ambiente de desenvolvimento Java Backend com orientação a objetos
+#  Inclui Snapper, EarlyOOM otimizado e todas as otimizações
 # =============================================================================
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -20,16 +21,37 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Optional
 
-# ─── Constantes ───────────────────────────────────────────────────────────────
 
-LOGFILE = Path.home() / "post-install-fedora44-java.log"
+# ── Constantes ────────────────────────────────────────────────────────────────
 
+LOGFILE        = Path.home() / "post-install-fedora44-java.log"
 JAVA_VERSION   = "21-tem"
 DOTNET_CHANNEL = "9.0"
 TUNED_PROFILE  = "laptop-ac-powersave"
 
 
-# ─── Enums ────────────────────────────────────────────────────────────────────
+# ── Paleta ANSI ───────────────────────────────────────────────────────────────
+
+class _A:
+    """Códigos ANSI centralizados para consistência visual."""
+    RST   = "\033[0m"
+    BOLD  = "\033[1m"
+    DIM   = "\033[2m"
+    # Cores
+    CYAN  = "\033[0;36m"
+    BCYAN = "\033[1;36m"
+    GREEN = "\033[0;32m"
+    BGRN  = "\033[1;32m"
+    YEL   = "\033[1;33m"
+    RED   = "\033[0;31m"
+    BRED  = "\033[1;31m"
+    BLUE  = "\033[0;34m"
+    BBLUE = "\033[1;34m"
+    GRAY  = "\033[0;37m"
+    WHITE = "\033[1;37m"
+
+
+# ── Enums ─────────────────────────────────────────────────────────────────────
 
 class StepStatus(Enum):
     PENDING  = auto()
@@ -40,13 +62,15 @@ class StepStatus(Enum):
     SKIPPED  = auto()
 
 
-# ─── Exceções customizadas ────────────────────────────────────────────────────
+# ── Exceções customizadas ─────────────────────────────────────────────────────
 
 class PostInstallError(Exception):
     """Erro base do post-install."""
 
+
 class CommandError(PostInstallError):
     """Erro ao executar um comando externo."""
+
     def __init__(self, cmd: list[str], returncode: int, stderr: str = "") -> None:
         self.cmd        = cmd
         self.returncode = returncode
@@ -55,49 +79,40 @@ class CommandError(PostInstallError):
             f"Comando falhou (exit {returncode}): {' '.join(cmd)}\n{stderr}"
         )
 
+
 class NetworkError(PostInstallError):
     """Sem conectividade de rede."""
+
 
 class PrivilegeError(PostInstallError):
     """Executado como root quando não deveria."""
 
 
-# ─── Logger customizado ───────────────────────────────────────────────────────
+# ── Logger customizado ────────────────────────────────────────────────────────
 
 class ColorFormatter(logging.Formatter):
-    COLORS = {
-        logging.DEBUG:    "\033[0;36m",   # cyan
-        logging.INFO:     "\033[0;32m",   # green
-        logging.WARNING:  "\033[1;33m",   # yellow
-        logging.ERROR:    "\033[0;31m",   # red
-        logging.CRITICAL: "\033[1;31m",   # bold red
-    }
-    RESET = "\033[0m"
-    ICONS = {
-        logging.DEBUG:    "·",
-        logging.INFO:     "✓",
-        logging.WARNING:  "⚠",
-        logging.ERROR:    "✗",
-        logging.CRITICAL: "✗✗",
+    _STYLES: dict[int, tuple[str, str]] = {
+        logging.DEBUG:    (_A.DIM  + _A.CYAN,  "·"),
+        logging.INFO:     (_A.GREEN,            "✓"),
+        logging.WARNING:  (_A.YEL,              "⚠"),
+        logging.ERROR:    (_A.RED,              "✗"),
+        logging.CRITICAL: (_A.BRED,             "✗✗"),
     }
 
     def format(self, record: logging.LogRecord) -> str:
-        color = self.COLORS.get(record.levelno, "")
-        icon  = self.ICONS.get(record.levelno, " ")
-        msg   = super().format(record)
-        return f"  {color}{icon}{self.RESET} {msg}"
+        color, icon = self._STYLES.get(record.levelno, ("", "·"))
+        msg = super().format(record)
+        return f"  {color}{icon}{_A.RST}  {msg}"
 
 
 def _build_logger() -> logging.Logger:
     logger = logging.getLogger("zennit")
     logger.setLevel(logging.DEBUG)
 
-    # Console — colorido
     ch = logging.StreamHandler(sys.stdout)
     ch.setLevel(logging.INFO)
     ch.setFormatter(ColorFormatter("%(message)s"))
 
-    # Arquivo — sem cores
     fh = logging.FileHandler(LOGFILE, encoding="utf-8")
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
@@ -110,7 +125,7 @@ def _build_logger() -> logging.Logger:
 log = _build_logger()
 
 
-# ─── Utilitário de execução ───────────────────────────────────────────────────
+# ── Utilitário de execução ────────────────────────────────────────────────────
 
 def run(
     cmd: list[str],
@@ -125,7 +140,7 @@ def run(
     merged_env = {**os.environ, **(env or {})}
     log.debug("Executando: %s", " ".join(cmd) if not shell else cmd)
     try:
-        result = subprocess.run(
+        return subprocess.run(
             cmd,
             check=check,
             capture_output=capture,
@@ -134,7 +149,6 @@ def run(
             cwd=cwd,
             shell=shell,
         )
-        return result
     except subprocess.CalledProcessError as exc:
         raise CommandError(
             cmd if isinstance(cmd, list) else [cmd],
@@ -157,7 +171,7 @@ def run_shell(cmd: str, *, check: bool = True) -> subprocess.CompletedProcess:
 def dnf(*packages: str, extra_flags: list[str] | None = None) -> None:
     """Instala pacotes via dnf (compatível com dnf5)."""
     flags   = extra_flags or []
-    command = ["sudo", "dnf", "install", "-y", *flags, *packages]
+    command = ["sudo", "dnf", "install", "-y", "--skip-unavailable", *flags, *packages]
     run(command)
 
 
@@ -174,14 +188,15 @@ def path_exists(p: str | Path) -> bool:
     return Path(p).exists()
 
 
-# ─── Dataclass de resultado ───────────────────────────────────────────────────
+# ── Dataclass de resultado ────────────────────────────────────────────────────
 
 @dataclass
 class StepResult:
-    name:    str
-    status:  StepStatus = StepStatus.PENDING
-    message: str        = ""
-    errors:  list[str]  = field(default_factory=list)
+    name:     str
+    status:   StepStatus = StepStatus.PENDING
+    message:  str        = ""
+    errors:   list[str]  = field(default_factory=list)
+    duration: float      = 0.0                          # segundos
 
     def mark_success(self, msg: str = "") -> None:
         self.status  = StepStatus.SUCCESS
@@ -200,7 +215,7 @@ class StepResult:
         self.message = msg
 
 
-# ─── Classe base dos Steps ────────────────────────────────────────────────────
+# ── Classe base dos Steps ─────────────────────────────────────────────────────
 
 class InstallStep(ABC):
     """Passo de instalação — cada subclasse representa uma etapa."""
@@ -217,6 +232,7 @@ class InstallStep(ABC):
     def run(self) -> StepResult:
         self.result.status = StepStatus.RUNNING
         _header(self.label)
+        t_start = datetime.now()
         try:
             self.execute()
             if self.result.status == StepStatus.RUNNING:
@@ -230,9 +246,11 @@ class InstallStep(ABC):
         except Exception as exc:  # noqa: BLE001
             self.result.mark_failed(f"Erro inesperado: {exc}")
             log.exception("Erro inesperado em '%s'", self.label)
+        finally:
+            self.result.duration = (datetime.now() - t_start).total_seconds()
+            _footer(self.result)
         return self.result
 
-    # helpers de logging
     def ok(self, msg: str)   -> None: log.info(msg)
     def warn(self, msg: str) -> None:
         log.warning(msg)
@@ -240,15 +258,59 @@ class InstallStep(ABC):
     def info(self, msg: str) -> None: log.debug("  → %s", msg)
 
 
+# ── Helpers visuais ───────────────────────────────────────────────────────────
+
+_W = 56  # largura interna das caixas
+
+
+def _progress_bar(current: int, total: int, width: int = 36) -> str:
+    """Gera barra de progresso colorida: ████████░░░░"""
+    filled = round(width * current / total) if total else width
+    bar    = f"{_A.BGRN}{'█' * filled}{_A.DIM + _A.BLUE}{'░' * (width - filled)}{_A.RST}"
+    return bar
+
+
 def _header(title: str) -> None:
-    print(f"\n\033[1m\033[34m{'─' * 56}\033[0m")
-    print(f"\033[1m\033[34m  {title}\033[0m")
-    print(f"\033[1m\033[34m{'─' * 56}\033[0m")
+    """Cabeçalho visual de cada step com barra de progresso."""
+    step_part, _, description = title.partition(" — ")
+    try:
+        current, total = (int(x) for x in step_part.split("/"))
+    except ValueError:
+        current, total, description = 1, 1, title
+
+    bar     = _progress_bar(current, total, width=36)
+    counter = f"{_A.GRAY}{current:>2}/{total}{_A.RST}"
+    rule    = f"{_A.BBLUE}{'─' * _W}{_A.RST}"
+
+    print(f"\n  {rule}")
+    print(f"  {_A.WHITE}{_A.BOLD}{description}{_A.RST}")
+    print(f"  {bar}  {counter}")
+    print(f"  {rule}")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+_STATUS_BADGE: dict[StepStatus, tuple[str, str]] = {
+    StepStatus.SUCCESS: (_A.BGRN,  "✓ concluído"),
+    StepStatus.WARNING: (_A.YEL,   "⚠ com avisos"),
+    StepStatus.FAILED:  (_A.BRED,  "✗ falhou"),
+    StepStatus.SKIPPED: (_A.CYAN,  "⊘ pulado"),
+}
+
+
+def _footer(result: StepResult) -> None:
+    """Rodapé com status e tempo de execução do step."""
+    color, badge = _STATUS_BADGE.get(result.status, (_A.GRAY, "· desconhecido"))
+    elapsed = f"{result.duration:.1f}s"
+    padding = _W - len(badge) - len(elapsed) - 2
+    print(
+        f"  {color}{badge}{_A.RST}"
+        f"{' ' * max(padding, 2)}"
+        f"{_A.DIM}{elapsed}{_A.RST}"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # STEPS
-# ═══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 class PreFlightChecks(InstallStep):
     """Verifica pré-condições: não root, internet disponível."""
@@ -268,7 +330,7 @@ class PreFlightChecks(InstallStep):
         self.ok("Conectividade OK")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class RepositorySetup(InstallStep):
     """Configura RPM Fusion e Flathub."""
@@ -278,6 +340,7 @@ class RepositorySetup(InstallStep):
     def execute(self) -> None:
         self._setup_rpmfusion()
         self._setup_flathub()
+        self._enable_copr_repos()
 
     def _setup_rpmfusion(self) -> None:
         self.info("Instalando RPM Fusion (free e nonfree)...")
@@ -301,8 +364,22 @@ class RepositorySetup(InstallStep):
         ])
         self.ok("Flathub configurado")
 
+    def _enable_copr_repos(self) -> None:
+        """Habilita repositórios COPR necessários para pacotes extras."""
+        copr_repos = [
+            "elxreno/preload",   # para preload
+            "abn/auto-cpufreq",  # para auto-cpufreq
+        ]
+        for repo in copr_repos:
+            self.info(f"Habilitando COPR: {repo}...")
+            try:
+                run(["sudo", "dnf", "copr", "enable", repo, "-y"])
+                self.ok(f"COPR {repo} habilitado")
+            except CommandError:
+                self.warn(f"Falha ao habilitar COPR {repo}")
 
-# ──────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 class SystemUpdate(InstallStep):
     """Atualização completa do sistema."""
@@ -315,51 +392,98 @@ class SystemUpdate(InstallStep):
         self.ok("Sistema atualizado")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class BaseToolsInstaller(InstallStep):
-    """Ferramentas base de CLI, ZSH, git e utilitários."""
+    """Ferramentas base de CLI, ZSH, git e utilitários (com EarlyOOM)."""
 
     label = "4/20 — Ferramentas base (CLI, ZSH, git, serviços)"
 
-    PACKAGES = [
+    OFFICIAL_PACKAGES = [
         "htop", "btop", "bat", "eza", "fd-find", "ripgrep", "fzf", "zoxide",
-        "tmux", "ncdu", "neofetch", "stow", "git", "zsh",
-        "curl", "wget", "unzip", "jq", "make", "gcc", "gcc-c++",
+        "tmux", "ncdu", "fastfetch",
+        "stow", "git", "zsh",
+        "curl", "wget", "unzip", "jq",
+        "make", "gcc", "gcc-c++",
         "gnome-tweaks", "dconf-editor",
         "firewalld", "rclone",
-        "earlyoom", "irqbalance", "preload",
+        "earlyoom", "irqbalance",
         "neovim", "python3", "python3-pip",
-        "powertop", "tuned", "auto-cpufreq",
+        "powertop", "tuned",
     ]
 
+    COPR_PACKAGES = ["preload", "auto-cpufreq"]
+
     def execute(self) -> None:
-        self._install_packages()
+        self._install_official_packages()
+        self._install_copr_packages()
+        self._configure_earlyoom()
         self._enable_services()
         self._set_zsh_default()
         self._install_starship()
 
-    def _install_packages(self) -> None:
-        self.info("Instalando pacotes base...")
-        try:
-            dnf(*self.PACKAGES)
-            self.ok("Pacotes base instalados")
-        except CommandError as exc:
-            self.warn(f"Alguns pacotes falharam: {exc}")
+    def _install_official_packages(self) -> None:
+        for pkg in self.OFFICIAL_PACKAGES:
+            self.info(f"Instalando {pkg}...")
+            try:
+                dnf(pkg, extra_flags=["--skip-unavailable"])
+                self.ok(f"{pkg} instalado")
+            except CommandError:
+                self.warn(f"{pkg} não disponível")
+
+    def _install_copr_packages(self) -> None:
+        for pkg in self.COPR_PACKAGES:
+            self.info(f"Instalando {pkg} via COPR...")
+            try:
+                dnf(pkg, extra_flags=["--skip-unavailable"])
+                self.ok(f"{pkg} instalado")
+            except CommandError:
+                self.warn(f"{pkg} falhou (verifique se o COPR foi habilitado)")
+
+    def _configure_earlyoom(self) -> None:
+        if not command_exists("earlyoom"):
+            self.warn("EarlyOOM não instalado – pulando configuração")
+            return
+        self.info("Configurando EarlyOOM para ambiente de desenvolvimento...")
+        config_content = (
+            'EARLYOOM_ARGS="-m 4 -s 50 '
+            '--prefer \'(Web Content|Isolated Web Co|chrome|firefox)\' '
+            '--avoid \'(gnome-shell|gnome-session|Xwayland|pipewire|java|idea|IntelliJ|docker|code)\'"'
+        )
+        run_shell(f"echo '{config_content}' | sudo tee /etc/default/earlyoom > /dev/null")
+        self.ok("EarlyOOM configurado (protege IDEs e processos Java)")
 
     def _enable_services(self) -> None:
-        for service in ("earlyoom", "irqbalance", "preload", "tuned"):
-            try:
-                run(["sudo", "systemctl", "enable", "--now", service])
-                self.ok(f"{service} ativado")
-            except CommandError:
-                self.warn(f"Falha ao ativar {service}")
+        services = {
+            "earlyoom":   "earlyoom",
+            "irqbalance": "irqbalance",
+            "preload":    "preload",
+            "tuned":      "tuned",
+        }
+        for service_name, display_name in services.items():
+            if command_exists(service_name):
+                try:
+                    run(["sudo", "systemctl", "enable", "--now", service_name])
+                    self.ok(f"Serviço {display_name} ativado")
+                except CommandError:
+                    self.warn(f"Falha ao ativar {display_name}")
+            else:
+                self.info(f"Serviço {display_name} não instalado – pulando")
 
     def _set_zsh_default(self) -> None:
         zsh_path = shutil.which("zsh")
         if not zsh_path:
-            self.warn("ZSH não encontrado no PATH")
-            return
+            self.warn("ZSH não encontrado. Tentando instalar novamente...")
+            try:
+                dnf("zsh")
+                zsh_path = shutil.which("zsh")
+                if not zsh_path:
+                    self.warn("ZSH ainda não disponível. Pulando configuração do shell.")
+                    return
+            except CommandError:
+                self.warn("Falha ao instalar ZSH.")
+                return
+
         result = run(
             ["getent", "passwd", os.environ["USER"]],
             capture=True, check=False,
@@ -386,7 +510,7 @@ class BaseToolsInstaller(InstallStep):
             self.warn(f"Starship falhou: {exc}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class KernelTuning(InstallStep):
     """Parâmetros sysctl de performance, THP, NVMe scheduler, fstrim."""
@@ -412,9 +536,9 @@ class KernelTuning(InstallStep):
         kernel.dmesg_restrict = 1
     """)
 
-    THP_TMPFILE = Path("/etc/tmpfiles.d/thp.conf")
-    THP_CONTENT = "w /sys/kernel/mm/transparent_hugepage/enabled - - - - madvise\n"
-    UDEV_RULE = Path("/etc/udev/rules.d/60-nvme-scheduler.rules")
+    THP_TMPFILE  = Path("/etc/tmpfiles.d/thp.conf")
+    THP_CONTENT  = "w /sys/kernel/mm/transparent_hugepage/enabled - - - - madvise\n"
+    UDEV_RULE    = Path("/etc/udev/rules.d/60-nvme-scheduler.rules")
     UDEV_CONTENT = 'ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/scheduler}="kyber"\n'
 
     def execute(self) -> None:
@@ -499,22 +623,24 @@ class KernelTuning(InstallStep):
         if "noatime" in content and "compress=zstd" in content:
             self.ok("fstab btrfs já otimizado")
             return
-        # Aplica noatime, compress=zstd, space_cache, discard=async na primeira linha btrfs com defaults
-        lines = content.splitlines()
+        lines     = content.splitlines()
         new_lines = []
         for line in lines:
             if line.startswith("#") or "btrfs" not in line:
                 new_lines.append(line)
                 continue
             if "defaults" in line and "noatime" not in line:
-                line = line.replace("defaults", "defaults,noatime,compress=zstd:1,space_cache=v2,discard=async")
+                line = line.replace(
+                    "defaults",
+                    "defaults,noatime,compress=zstd:1,space_cache=v2,discard=async",
+                )
             new_lines.append(line)
         new_content = "\n".join(new_lines)
         run_shell(f"echo '{new_content}' | sudo tee {fstab} > /dev/null")
         self.ok("fstab btrfs otimizado com noatime, compress=zstd:1, discard=async")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class ZramSetup(InstallStep):
     """Configura ZRAM como swap comprimido em RAM (50% da RAM, zstd)."""
@@ -554,12 +680,15 @@ class ZramSetup(InstallStep):
     def _check_disk_swap(self) -> None:
         result = run(["swapon", "--show"], capture=True, check=False)
         if result.stdout.strip():
-            if any(("swapfile" in line or "/dev/" in line) for line in result.stdout.splitlines()):
+            if any(
+                ("swapfile" in line or "/dev/" in line)
+                for line in result.stdout.splitlines()
+            ):
                 self.warn("Swap em disco detectado. Considere removê-lo para priorizar ZRAM.")
                 self.info("Execute: sudo swapoff <swap> && sudo rm <swapfile>")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class CpuPowerManagement(InstallStep):
     """CPU: amd_pstate, tuned, auto-cpufreq, desativa power-profiles-daemon."""
@@ -573,8 +702,7 @@ class CpuPowerManagement(InstallStep):
         self._disable_power_profiles_daemon()
 
     def _configure_amd_pstate(self) -> None:
-        # Garante que o grubby está instalado
-        dnf("grubby", check=False)
+        dnf("grubby")
         self.info("Adicionando amd_pstate=active via grubby...")
         run(["sudo", "grubby", "--update-kernel=ALL", "--args=amd_pstate=active"])
         self.ok("amd_pstate=active aplicado (efeito após reboot)")
@@ -587,15 +715,14 @@ class CpuPowerManagement(InstallStep):
         self.ok(f"tuned ativo com perfil '{TUNED_PROFILE}'")
 
     def _setup_auto_cpufreq(self) -> None:
-        if command_exists("auto-cpufreq"):
-            self.ok("auto-cpufreq já instalado")
-        else:
-            dnf("auto-cpufreq")
+        if not command_exists("auto-cpufreq"):
+            self.warn("auto-cpufreq não instalado. Pulando.")
+            return
         result = run(["sudo", "auto-cpufreq", "--install"], check=False)
         if result.returncode == 0:
             self.ok("auto-cpufreq instalado como serviço")
         else:
-            self.warn("auto-cpufreq --install pode já estar configurado")
+            self.info("auto-cpufreq --install: serviço pode já estar configurado")
 
     def _disable_power_profiles_daemon(self) -> None:
         result = run(
@@ -605,17 +732,17 @@ class CpuPowerManagement(InstallStep):
         if result.returncode == 0:
             self.ok("power-profiles-daemon desativado")
         else:
-            self.info("power-profiles-daemon já estava desativado")
+            self.info("power-profiles-daemon já estava desativado ou não existe")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class PowertopAutoTune(InstallStep):
     """Cria e ativa serviço powertop --auto-tune no boot."""
 
     label = "8/20 — Energia: powertop auto-tune"
 
-    SERVICE_FILE = Path("/etc/systemd/system/powertop.service")
+    SERVICE_FILE    = Path("/etc/systemd/system/powertop.service")
     SERVICE_CONTENT = textwrap.dedent("""\
         [Unit]
         Description=PowerTop auto-tune — AMD notebook power savings
@@ -634,7 +761,6 @@ class PowertopAutoTune(InstallStep):
         if not command_exists("powertop"):
             self.warn("powertop não encontrado. Instale o pacote primeiro.")
             return
-
         self.info("Criando serviço powertop...")
         run_shell(f"echo '{self.SERVICE_CONTENT}' | sudo tee {self.SERVICE_FILE} > /dev/null")
         run(["sudo", "systemctl", "daemon-reload"])
@@ -642,7 +768,7 @@ class PowertopAutoTune(InstallStep):
         self.ok("powertop.service criado e ativado")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class JavaBackendInstaller(InstallStep):
     """Instala o ecossistema Java Backend: SDKMan, Java, Maven, Gradle, Quarkus CLI."""
@@ -652,11 +778,11 @@ class JavaBackendInstaller(InstallStep):
     SDKMAN_INIT = Path.home() / ".sdkman" / "bin" / "sdkman-init.sh"
 
     SDK_PACKAGES = [
-        ("java",   JAVA_VERSION),
-        ("java",   "17-tem"),
-        ("maven",  ""),
-        ("gradle", ""),
-        ("quarkus",""),
+        ("java",    JAVA_VERSION),
+        ("java",    "17-tem"),
+        ("maven",   ""),
+        ("gradle",  ""),
+        ("quarkus", ""),
     ]
 
     def execute(self) -> None:
@@ -690,8 +816,8 @@ class JavaBackendInstaller(InstallStep):
     def _sdk_cmd(self, *args: str) -> bool:
         if not self.SDKMAN_INIT.exists():
             return False
-        init = str(self.SDKMAN_INIT)
-        cmd  = f'source "{init}" && sdk {" ".join(args)}'
+        init   = str(self.SDKMAN_INIT)
+        cmd    = f'source "{init}" && sdk {" ".join(args)}'
         result = run_shell(cmd, check=False)
         return result.returncode == 0
 
@@ -699,12 +825,15 @@ class JavaBackendInstaller(InstallStep):
         for pkg, version in self.SDK_PACKAGES:
             label = f"{pkg} {version}".strip()
             self.info(f"Instalando {label} via SDKMan...")
-            ok = self._sdk_cmd("install", pkg, version) if version else self._sdk_cmd("install", pkg)
+            ok = (
+                self._sdk_cmd("install", pkg, version)
+                if version
+                else self._sdk_cmd("install", pkg)
+            )
             if ok:
                 self.ok(f"{label} instalado")
             else:
                 self.warn(f"{label} pode já estar instalado ou falhou")
-
         self._sdk_cmd("default", "java", JAVA_VERSION)
         self.ok(f"Java {JAVA_VERSION} definido como padrão")
 
@@ -715,7 +844,7 @@ class JavaBackendInstaller(InstallStep):
             self.ok("Maven disponível no PATH")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class DockerInstaller(InstallStep):
     """Instala Docker CE e configura firewall."""
@@ -741,12 +870,10 @@ class DockerInstaller(InstallStep):
                 "containerd.io", "docker-compose-plugin",
             )
             run(["sudo", "systemctl", "enable", "--now", "docker"])
-
             user = os.environ.get("USER", "")
             if user:
                 run(["sudo", "usermod", "-aG", "docker", user])
                 self.ok(f"Usuário '{user}' adicionado ao grupo docker")
-
             self.ok("Docker CE instalado (reinicie a sessão para efeito do grupo)")
         except CommandError as exc:
             self.warn(f"Docker falhou: {exc}")
@@ -765,19 +892,14 @@ class DockerInstaller(InstallStep):
         self.ok("Firewall configurado para Docker")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class DatabaseToolsInstaller(InstallStep):
     """Instala ferramentas de banco de dados: DBeaver, clientes CLI."""
 
     label = "11/20 — Ferramentas de banco de dados"
 
-    CLI_PACKAGES = [
-        "postgresql",
-        "mysql",
-        "redis",
-        "sqlite",
-    ]
+    CLI_PACKAGES = ["postgresql", "mysql", "redis", "sqlite"]
 
     def execute(self) -> None:
         self._install_cli_clients()
@@ -801,7 +923,7 @@ class DatabaseToolsInstaller(InstallStep):
             self.warn(f"DBeaver falhou: {exc}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class IdeToolsInstaller(InstallStep):
     """Instala IDEs e ferramentas de desenvolvimento: VS Code, IntelliJ, etc."""
@@ -809,9 +931,9 @@ class IdeToolsInstaller(InstallStep):
     label = "12/20 — IDEs e ferramentas de desenvolvimento"
 
     FLATPAK_TOOLS = [
-        ("com.visualstudio.code",           "VS Code"),
-        ("com.usebruno.Bruno",              "Bruno (API Client)"),
-        ("org.onlyoffice.desktopeditors",   "OnlyOffice"),
+        ("com.visualstudio.code",          "VS Code"),
+        ("com.usebruno.Bruno",             "Bruno (API Client)"),
+        ("org.onlyoffice.desktopeditors",  "OnlyOffice"),
     ]
 
     def execute(self) -> None:
@@ -851,15 +973,14 @@ class IdeToolsInstaller(InstallStep):
             self.warn(f"uv falhou: {exc}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class FontInstaller(InstallStep):
     """Instala Nerd Fonts (FiraCode, JetBrainsMono) e MS Core Fonts."""
 
     label = "13/20 — Fontes (Nerd Fonts + MS Core)"
 
-    FONT_DIR = Path.home() / ".local" / "share" / "fonts"
-
+    FONT_DIR   = Path.home() / ".local" / "share" / "fonts"
     NERD_FONTS = [
         ("FiraCode",      "FiraCodeNerdFont-Regular.ttf"),
         ("JetBrainsMono", "JetBrainsMonoNerdFont-Regular.ttf"),
@@ -907,14 +1028,13 @@ class FontInstaller(InstallStep):
 
     def _refresh_font_cache(self) -> None:
         try:
-            run(["fc-cache", "-fv", str(self.FONT_DIR)],
-                capture=True, check=False)
+            run(["fc-cache", "-fv", str(self.FONT_DIR)], capture=True, check=False)
             self.ok("Cache de fontes atualizado")
         except CommandError as exc:
             self.warn(f"fc-cache falhou: {exc}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class GnomeThemeSetup(InstallStep):
     """Tema Fluent Blue Dark + ícones + Folder Color."""
@@ -984,9 +1104,10 @@ class GnomeThemeSetup(InstallStep):
         try:
             run(["git", "clone", "--depth=1",
                  "https://github.com/costales/folder-color", str(tmp_dir)])
-            run(["python3", "setup.py", "install", "--prefix", str(Path.home() / ".local")],
-                cwd=tmp_dir, check=False)
-            # Reiniciar Nautilus se estiver rodando
+            run(
+                ["python3", "setup.py", "install", "--prefix", str(Path.home() / ".local")],
+                cwd=tmp_dir, check=False,
+            )
             run(["nautilus", "-q"], check=False)
             self.ok("Folder Color instalado")
         except CommandError as exc:
@@ -995,11 +1116,11 @@ class GnomeThemeSetup(InstallStep):
     def _apply_gnome_settings(self) -> None:
         self.info("Aplicando configurações GNOME...")
         settings = [
-            ("org.gnome.desktop.interface", "gtk-theme", "Fluent-Dark"),
-            ("org.gnome.desktop.interface", "icon-theme", "Fluent-dark"),
-            ("org.gnome.desktop.interface", "color-scheme", "prefer-dark"),
-            ("org.gnome.desktop.wm.preferences", "theme", "Fluent-Dark"),
-            ("org.gnome.desktop.interface", "monospace-font-name", "FiraCode Nerd Font 11"),
+            ("org.gnome.desktop.interface",      "gtk-theme",          "Fluent-Dark"),
+            ("org.gnome.desktop.interface",      "icon-theme",         "Fluent-dark"),
+            ("org.gnome.desktop.interface",      "color-scheme",       "prefer-dark"),
+            ("org.gnome.desktop.wm.preferences", "theme",              "Fluent-Dark"),
+            ("org.gnome.desktop.interface",      "monospace-font-name","FiraCode Nerd Font 11"),
         ]
         for schema, key, value in settings:
             run(["gsettings", "set", schema, key, value], check=False)
@@ -1008,13 +1129,13 @@ class GnomeThemeSetup(InstallStep):
     def _apply_flatpak_overrides(self) -> None:
         self.info("Configurando Flatpak para enxergar os temas...")
         run(["sudo", "flatpak", "override", "--filesystem=" + str(self.THEME_DIR)], check=False)
-        run(["sudo", "flatpak", "override", "--filesystem=" + str(self.ICON_DIR)], check=False)
-        run(["sudo", "flatpak", "override", "--env=GTK_THEME=Fluent-Dark"], check=False)
-        run(["sudo", "flatpak", "override", "--env=ICON_THEME=Fluent-dark"], check=False)
+        run(["sudo", "flatpak", "override", "--filesystem=" + str(self.ICON_DIR)],  check=False)
+        run(["sudo", "flatpak", "override", "--env=GTK_THEME=Fluent-Dark"],         check=False)
+        run(["sudo", "flatpak", "override", "--env=ICON_THEME=Fluent-dark"],        check=False)
         self.ok("Overrides Flatpak aplicados")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class WallpaperSetup(InstallStep):
     """Wallpaper dinâmico Firewatch (nativo GNOME)."""
@@ -1023,8 +1144,11 @@ class WallpaperSetup(InstallStep):
 
     WP_DIR   = Path.home() / ".local" / "share" / "backgrounds" / "firewatch"
     PROP_DIR = Path.home() / ".local" / "share" / "gnome-background-properties"
-
-    IMAGES = [f"https://raw.githubusercontent.com/adi1090x/dynamic-wallpaper/master/images/firewatch/firewatch_{i}.jpg" for i in range(1, 5)]
+    IMAGES   = [
+        f"https://raw.githubusercontent.com/adi1090x/dynamic-wallpaper"
+        f"/master/images/firewatch/firewatch_{i}.jpg"
+        for i in range(1, 5)
+    ]
 
     def execute(self) -> None:
         self._create_directories()
@@ -1041,7 +1165,7 @@ class WallpaperSetup(InstallStep):
         self.info("Baixando imagens do Firewatch...")
         for url in self.IMAGES:
             filename = Path(url).name
-            dest = self.WP_DIR / filename
+            dest     = self.WP_DIR / filename
             if dest.exists():
                 continue
             try:
@@ -1088,22 +1212,22 @@ class WallpaperSetup(InstallStep):
         self.ok("Propriedades do wallpaper registradas (aparecerá nas configurações)")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class GnomeExtensionsSetup(InstallStep):
     """Instala e habilita extensões GNOME via API."""
 
     label = "16/20 — Extensões GNOME"
 
-    EXT_DIR = Path.home() / ".local" / "share" / "gnome-shell" / "extensions"
+    EXT_DIR    = Path.home() / ".local" / "share" / "gnome-shell" / "extensions"
     EXTENSIONS = [
-        ("dash-to-dock@micxgx.gmail.com",              "dash-to-dock"),
-        ("appindicatorsupport@rgcjonas.gmail.com",      "appindicator"),
-        ("caffeine@patapon.info",                       "caffeine"),
-        ("compiz-alike-magic-lamp-effect@hermes81.github.com", "magic-lamp"),
-        ("add-to-desktop@bobsilverberg",                "add-to-desktop"),
-        ("ding@rastersoft.com",                         "desktop-icons"),
-        ("blur-my-shell@aunetx",                        "blur-my-shell"),
+        ("dash-to-dock@micxgx.gmail.com",                      "dash-to-dock"),
+        ("appindicatorsupport@rgcjonas.gmail.com",              "appindicator"),
+        ("caffeine@patapon.info",                               "caffeine"),
+        ("compiz-alike-magic-lamp-effect@hermes81.github.com",  "magic-lamp"),
+        ("add-to-desktop@bobsilverberg",                        "add-to-desktop"),
+        ("ding@rastersoft.com",                                 "desktop-icons"),
+        ("blur-my-shell@aunetx",                                "blur-my-shell"),
     ]
 
     def execute(self) -> None:
@@ -1134,36 +1258,39 @@ class GnomeExtensionsSetup(InstallStep):
             if (self.EXT_DIR / uuid).exists():
                 self.ok(f"Extensão {uuid} já instalada")
                 continue
-
             self.info(f"Instalando extensão: {uuid}...")
             try:
-                query_url = f"https://extensions.gnome.org/extension-query/?search={uuid.split('@')[0]}"
-                result = run(["curl", "-s", query_url], capture=True, check=False)
+                query_url = (
+                    f"https://extensions.gnome.org/extension-query/"
+                    f"?search={uuid.split('@')[0]}"
+                )
+                result       = run(["curl", "-s", query_url], capture=True, check=False)
                 download_url = None
                 if result.returncode == 0:
-                    import json
                     data = json.loads(result.stdout)
                     for ext in data.get("extensions", []):
                         if ext.get("uuid") == uuid:
-                            version_map = ext.get("shell_version_map", {})
+                            version_map  = ext.get("shell_version_map", {})
                             download_url = version_map.get(shell_ver, {}).get("download_url")
                             if not download_url:
-                                for ver, info in version_map.items():
+                                for _, info in version_map.items():
                                     download_url = info.get("download_url")
                                     break
                             break
                 if not download_url:
                     info_result = run(
-                        ["curl", "-s", f"https://extensions.gnome.org/extension-info/?uuid={uuid}"],
+                        ["curl", "-s",
+                         f"https://extensions.gnome.org/extension-info/?uuid={uuid}"],
                         capture=True, check=False,
                     )
                     if info_result.returncode == 0:
-                        ext_info = json.loads(info_result.stdout)
+                        ext_info     = json.loads(info_result.stdout)
                         download_url = ext_info.get("download_url")
 
                 if download_url and download_url != "null":
                     zip_path = f"/tmp/{uuid}.zip"
-                    run(["curl", "-sL", f"https://extensions.gnome.org{download_url}", "-o", zip_path])
+                    run(["curl", "-sL",
+                         f"https://extensions.gnome.org{download_url}", "-o", zip_path])
                     dest_dir = self.EXT_DIR / uuid
                     dest_dir.mkdir(parents=True, exist_ok=True)
                     run(["unzip", "-q", zip_path, "-d", str(dest_dir)])
@@ -1175,13 +1302,14 @@ class GnomeExtensionsSetup(InstallStep):
                 self.warn(f"Falha ao instalar {uuid}: {exc}")
 
     def _enable_extensions(self) -> None:
-        uuids = [uuid for uuid, _ in self.EXTENSIONS]
+        uuids        = [uuid for uuid, _ in self.EXTENSIONS]
         enabled_list = str(uuids).replace("'", '"')
-        run(["gsettings", "set", "org.gnome.shell", "enabled-extensions", enabled_list], check=False)
+        run(["gsettings", "set", "org.gnome.shell", "enabled-extensions", enabled_list],
+            check=False)
         self.ok("Extensões habilitadas no GNOME")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class SnapperSetup(InstallStep):
     """Instala e configura Snapper para snapshots automáticos do sistema (btrfs)."""
@@ -1206,31 +1334,25 @@ class SnapperSetup(InstallStep):
             self.warn(f"Snapper falhou: {exc}")
 
     def _create_snapper_config(self) -> None:
-        result = run(
-            ["sudo", "snapper", "list-configs"],
-            capture=True, check=False,
-        )
+        result = run(["sudo", "snapper", "list-configs"], capture=True, check=False)
         if self.SNAPPER_ROOT_CONFIG in result.stdout:
             self.ok("Configuração Snapper para 'root' já existe")
             return
         self.info("Criando configuração Snapper para a partição raiz...")
         try:
             run(["sudo", "snapper", "-c", self.SNAPPER_ROOT_CONFIG, "create-config", "/"])
-            # Ajustes recomendados: excluir snapshots das pastas que não devem ser rastreadas
-            run(["sudo", "snapper", "-c", self.SNAPPER_ROOT_CONFIG, "set-config",
-                 "ALLOW_USERS=" + os.environ["USER"]], check=False)
-            # Desabilitar timeline por padrão? Não, queremos timeline e cleanup.
+            run(
+                ["sudo", "snapper", "-c", self.SNAPPER_ROOT_CONFIG, "set-config",
+                 "ALLOW_USERS=" + os.environ["USER"]],
+                check=False,
+            )
             self.ok("Configuração Snapper criada")
         except CommandError as exc:
             self.warn(f"Não foi possível criar configuração Snapper: {exc}")
 
     def _enable_snapper_timers(self) -> None:
         self.info("Ativando timers do Snapper...")
-        timers = [
-            "snapper-timeline.timer",
-            "snapper-cleanup.timer",
-        ]
-        for timer in timers:
+        for timer in ("snapper-timeline.timer", "snapper-cleanup.timer"):
             try:
                 run(["sudo", "systemctl", "enable", "--now", timer])
                 self.ok(f"Timer {timer} ativado")
@@ -1238,21 +1360,22 @@ class SnapperSetup(InstallStep):
                 self.warn(f"Falha ao ativar {timer}")
 
     def _configure_auto_cleanup(self) -> None:
-        # Ajusta política de retenção (exemplo: manter 10 snapshots)
         try:
-            run(["sudo", "snapper", "-c", self.SNAPPER_ROOT_CONFIG, "set-config",
+            run(
+                ["sudo", "snapper", "-c", self.SNAPPER_ROOT_CONFIG, "set-config",
                  "TIMELINE_LIMIT_HOURLY=5",
                  "TIMELINE_LIMIT_DAILY=7",
                  "TIMELINE_LIMIT_WEEKLY=4",
                  "TIMELINE_LIMIT_MONTHLY=3",
-                 "TIMELINE_LIMIT_YEARLY=1",
-            ], check=False)
+                 "TIMELINE_LIMIT_YEARLY=1"],
+                check=False,
+            )
             self.ok("Política de retenção do Snapper ajustada")
         except CommandError as exc:
             self.warn(f"Ajuste de retenção falhou: {exc}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class DotfilesSetup(InstallStep):
     """Clona e aplica dotfiles via GNU Stow."""
@@ -1289,8 +1412,7 @@ class DotfilesSetup(InstallStep):
         if (self.DOTFILES_DIR / ".git").exists():
             self.info("Atualizando dotfiles...")
             result = run(
-                ["git", "-C", str(self.DOTFILES_DIR),
-                 "pull", "--rebase", "--autostash"],
+                ["git", "-C", str(self.DOTFILES_DIR), "pull", "--rebase", "--autostash"],
                 check=False,
             )
             if result.returncode != 0:
@@ -1323,8 +1445,7 @@ class DotfilesSetup(InstallStep):
                 continue
             result = run(
                 ["stow", "--restow", "--target", str(Path.home()), pkg_dir.name],
-                cwd=self.DOTFILES_DIR,
-                check=False,
+                cwd=self.DOTFILES_DIR, check=False,
             )
             if result.returncode == 0:
                 self.ok(f"stow: {pkg_dir.name}")
@@ -1335,8 +1456,7 @@ class DotfilesSetup(InstallStep):
         if not self.TPM_DIR.exists():
             try:
                 run(["git", "clone",
-                     "https://github.com/tmux-plugins/tpm",
-                     str(self.TPM_DIR)])
+                     "https://github.com/tmux-plugins/tpm", str(self.TPM_DIR)])
                 self.ok("TPM (Tmux Plugin Manager) instalado")
             except CommandError as exc:
                 self.warn(f"TPM falhou: {exc}")
@@ -1356,7 +1476,7 @@ class DotfilesSetup(InstallStep):
         self.ok("Paths do Zennit-OS adicionados ao .zshrc")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class DisableUnnecessaryServices(InstallStep):
     """Desativa serviços desnecessários para reduzir boot time."""
@@ -1384,20 +1504,22 @@ class DisableUnnecessaryServices(InstallStep):
             log.info(f"Tempo de boot: {result.stdout.strip()}")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # ORQUESTRADOR
-# ═══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 class PostInstallOrchestrator:
     """Orquestra todos os passos de instalação e exibe o relatório final."""
 
-    BANNER = """\
-\033[1m\033[36m
-╔══════════════════════════════════════════════════════╗
-║   Zennit-OS — Fedora 44  ·  Java Backend Setup      ║
-║        com Snapper + otimizações completas           ║
-╚══════════════════════════════════════════════════════╝
-\033[0m"""
+    BANNER = (
+        f"\n{_A.BCYAN}"
+        "  ╔══════════════════════════════════════════════════════╗\n"
+        "  ║                                                      ║\n"
+        "  ║   Zennit-OS  ·  Fedora 44  ·  Java Backend Setup   ║\n"
+        "  ║   Snapper  ·  EarlyOOM  ·  btrfs  ·  AMD pstate    ║\n"
+        "  ║                                                      ║\n"
+        f"  ╚══════════════════════════════════════════════════════╝{_A.RST}"
+    )
 
     def __init__(self) -> None:
         self.steps: list[InstallStep] = [
@@ -1425,14 +1547,13 @@ class PostInstallOrchestrator:
 
     def run(self) -> int:
         print(self.BANNER)
+        print(f"  {_A.DIM}Log completo em: {LOGFILE}{_A.RST}\n")
         log.info("Log completo em: %s", LOGFILE)
 
         start = datetime.now()
-
         for step in self.steps:
             result = step.run()
             self.results.append(result)
-
             if isinstance(step, PreFlightChecks) and result.status == StepStatus.FAILED:
                 log.error("Pré-condições não atendidas. Abortando.")
                 self._print_summary(elapsed=datetime.now() - start)
@@ -1447,57 +1568,88 @@ class PostInstallOrchestrator:
             for r in self.results
         )
 
+    # ── Resumo ────────────────────────────────────────────────────────────────
+
+    _ICON: dict[StepStatus, tuple[str, str]] = {
+        StepStatus.SUCCESS: (_A.BGRN,  "✓"),
+        StepStatus.WARNING: (_A.YEL,   "⚠"),
+        StepStatus.FAILED:  (_A.BRED,  "✗"),
+        StepStatus.SKIPPED: (_A.CYAN,  "⊘"),
+        StepStatus.PENDING: (_A.GRAY,  "·"),
+        StepStatus.RUNNING: (_A.BLUE,  "→"),
+    }
+
     def _print_summary(self, elapsed) -> None:
-        STATUS_ICON = {
-            StepStatus.SUCCESS: ("\033[0;32m", "✓"),
-            StepStatus.WARNING: ("\033[1;33m", "⚠"),
-            StepStatus.FAILED:  ("\033[0;31m", "✗"),
-            StepStatus.SKIPPED: ("\033[0;36m", "⊘"),
-            StepStatus.PENDING: ("\033[0;37m", "·"),
-            StepStatus.RUNNING: ("\033[0;34m", "→"),
-        }
-        NC = "\033[0m"
+        NC = _A.RST
 
-        print(f"\n\033[1m{'═' * 56}\033[0m")
-        print("\033[1m  Resumo da instalação\033[0m")
-        print(f"\033[1m{'═' * 56}\033[0m")
+        # Cabeçalho
+        print(f"\n  {_A.BOLD}{_A.WHITE}{'═' * _W}{NC}")
+        print(f"  {_A.BOLD}{_A.WHITE}  RESUMO DA INSTALAÇÃO{NC}")
+        print(f"  {_A.BOLD}{_A.WHITE}{'═' * _W}{NC}\n")
 
+        # Linhas por step
         for r in self.results:
-            color, icon = STATUS_ICON.get(r.status, ("", "?"))
-            print(f"  {color}{icon}{NC}  {r.name}")
-            for err in r.errors:
-                print(f"       \033[1;33m↳  {err}\033[0m")
+            color, icon = self._ICON.get(r.status, (_A.GRAY, "·"))
+            _, _, desc  = r.name.partition(" — ")
+            desc        = desc or r.name
+            dur_str     = f"{r.duration:5.1f}s" if r.duration else "   —  "
 
+            # Dots até a coluna de tempo
+            visible_len = len(desc) + 2           # ícone + espaço
+            dot_count   = max(2, _W - visible_len - len(dur_str) - 4)
+            dots        = f"{_A.DIM}{'·' * dot_count}{NC}"
+
+            print(
+                f"  {color}{icon}{NC}  "
+                f"{_A.WHITE}{desc}{NC}  "
+                f"{dots}  "
+                f"{_A.DIM}{dur_str}{NC}"
+            )
+            for err in r.errors:
+                print(f"       {_A.YEL}↳  {err}{NC}")
+
+        # Totais
         total   = len(self.results)
         success = sum(1 for r in self.results if r.status == StepStatus.SUCCESS)
         warns   = sum(1 for r in self.results if r.status == StepStatus.WARNING)
         failed  = sum(1 for r in self.results if r.status == StepStatus.FAILED)
 
-        print(f"\n  Total: {total}  |  "
-              f"\033[0;32m✓ {success}\033[0m  |  "
-              f"\033[1;33m⚠ {warns}\033[0m  |  "
-              f"\033[0;31m✗ {failed}\033[0m  |  "
-              f"Tempo: {elapsed}")
+        # Duração formatada
+        total_s  = int(elapsed.total_seconds())
+        dur_fmt  = f"{total_s // 60}m {total_s % 60:02d}s"
 
+        print(f"\n  {_A.BOLD}{'─' * _W}{NC}")
+        print(
+            f"  {_A.GRAY}{total} passos{NC}  "
+            f"{_A.BGRN}✓ {success}{NC}  "
+            f"{_A.YEL}⚠ {warns}{NC}  "
+            f"{_A.BRED}✗ {failed}{NC}  "
+            f"{_A.DIM}·  {dur_fmt}{NC}"
+        )
+        print(f"  {_A.BOLD}{'─' * _W}{NC}\n")
+
+        # Banner final
         if self._all_passed():
-            print("\n\033[1m\033[32m"
-                  "╔══════════════════════════════════════════════════════╗\n"
-                  "║   Instalação concluída! Reinicie a sessão.           ║\n"
-                  "╚══════════════════════════════════════════════════════╝"
-                  "\033[0m")
+            print(
+                f"  {_A.BGRN}"
+                "╔══════════════════════════════════════════════════════╗\n"
+                "  ║   ✓  Instalação concluída!  Reinicie a sessão.      ║\n"
+                f"  ╚══════════════════════════════════════════════════════╝{NC}"
+            )
         else:
-            print("\n\033[1m\033[31m"
-                  "╔══════════════════════════════════════════════════════╗\n"
-                  "║   Instalação concluída com erros. Veja o log.        ║\n"
-                  "╚══════════════════════════════════════════════════════╝"
-                  "\033[0m")
+            print(
+                f"  {_A.BRED}"
+                "╔══════════════════════════════════════════════════════╗\n"
+                "  ║   ✗  Instalação concluída com erros.  Veja o log.   ║\n"
+                f"  ╚══════════════════════════════════════════════════════╝{NC}"
+            )
 
-        print(f"\n  Log: \033[1m{LOGFILE}\033[0m\n")
+        print(f"\n  {_A.DIM}Log: {_A.BOLD}{LOGFILE}{NC}\n")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # ENTRY POINT
-# ═══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 def main() -> int:
     orchestrator = PostInstallOrchestrator()
