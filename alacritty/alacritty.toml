@@ -1,37 +1,62 @@
-# Configuração do Alacritty para Zorin OS
+# ============================
+#   Tema Alacritty - Terafox (TOML)
+# ============================
 
 [window]
-padding = { x = 12, y = 12 }
-dynamic_padding = true
-opacity = 0.9
-blur = true
-title = "Alacritty - Syscare Dev"
+opacity = 0.30
+padding = { x = 10, y = 10 }
 
 [font]
-size = 11.0
+size = 12.0
 
 [font.normal]
-family = "FiraCode Nerd Font"
+family = "JetBrainsMono Nerd Font"
 style = "Regular"
 
 [font.bold]
-family = "FiraCode Nerd Font"
+family = "JetBrainsMono Nerd Font"
 style = "Bold"
 
 [font.italic]
-family = "FiraCode Nerd Font"
+family = "JetBrainsMono Nerd Font"
 style = "Italic"
 
-[cursor]
-style = { shape = "Beam", blinking = "On" }
+[font.bold_italic]
+family = "JetBrainsMono Nerd Font"
+style = "Bold Italic"
 
 [colors.primary]
-background = "#1a1b26" # Estilo Tokyo Night (escuro e moderno)
-foreground = "#a9b1d6"
+background = "#0f1c2e"
+foreground = "#cbd6e2"
 
-[selection]
-save_to_clipboard = true
+[colors.selection]
+background = "#1e2d40"
+foreground = "#cbd6e2"
 
-[shell]
-program = "/usr/bin/tmux"
-args = ["new-session", "-A", "-s", "main"]
+[colors.cursor]
+text = "#0f1c2e"
+cursor = "#f6c177"
+
+[colors.normal]
+black = "#1a2a3a"
+red = "#ff6b6b"
+green = "#8bd49c"
+yellow = "#ffd47e"
+blue = "#5ab0f6"
+magenta = "#c47fd5"
+cyan = "#7cdce6"
+white = "#cbd6e2"
+
+[colors.bright]
+black = "#223447"
+red = "#ff7f7f"
+green = "#9ce6ad"
+yellow = "#ffdf99"
+blue = "#6bc1ff"
+magenta = "#d89fee"
+cyan = "#8ceaf7"
+white = "#e6eef5"
+
+# Recarrega configurações ao salvar
+[general]
+live_config_reload = true

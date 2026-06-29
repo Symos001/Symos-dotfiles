@@ -1,0 +1,34 @@
+{
+    "layout": [
+        {
+            "label": "⏻",
+            "action": "systemctl poweroff",
+            "keybind": "e"
+        },
+        {
+            "label": "⟳",
+            "action": "systemctl reboot",
+            "keybind": "r"
+        },
+        {
+            "label": "⏾",
+            "action": "systemctl suspend",
+            "keybind": "s"
+        },
+        {
+            "label": "⇥",
+            "action": "hyprctl dispatch exit",
+            "keybind": "l"
+        },
+        {
+            "label": "⇶",
+            "action": "systemctl hibernate",
+            "keybind": "h"
+        },
+        {
+            "label": "🔒",
+            "action": "hyprlock",
+            "keybind": "b"
+        }
+    ]
+}

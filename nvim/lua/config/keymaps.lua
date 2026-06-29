@@ -3,14 +3,14 @@
 -- Add any additional keymaps here
 
 local function set_terminal_keymaps()
-  local opts = {buffer = 0}
-  vim.keymap.set('t', '<esc>', [[<C-\><C-n>]], opts)
-  vim.keymap.set('t', 'jk', [[<C-\><C-n>]], opts)
-  vim.keymap.set('t', '<C-h>', [[<Cmd>wincmd h<CR>]], opts)
-  vim.keymap.set('t', '<C-j>', [[<Cmd>wincmd j<CR>]], opts)
-  vim.keymap.set('t', '<C-k>', [[<Cmd>wincmd k<CR>]], opts)
-  vim.keymap.set('t', '<C-l>', [[<Cmd>wincmd l<CR>]], opts)
-  vim.keymap.set('t', '<C-w>', [[<C-\><C-n><C-w>]], opts)
+  local opts = { buffer = 0 }
+  vim.keymap.set("t", "<esc>", [[<C-\><C-n>]], opts)
+  vim.keymap.set("t", "jk", [[<C-\><C-n>]], opts)
+  vim.keymap.set("t", "<C-h>", [[<Cmd>wincmd h<CR>]], opts)
+  vim.keymap.set("t", "<C-j>", [[<Cmd>wincmd j<CR>]], opts)
+  vim.keymap.set("t", "<C-k>", [[<Cmd>wincmd k<CR>]], opts)
+  vim.keymap.set("t", "<C-l>", [[<Cmd>wincmd l<CR>]], opts)
+  vim.keymap.set("t", "<C-w>", [[<C-\><C-n><C-w>]], opts)
 end
 
 -- if you only want these mappings for toggle term use termopen
@@ -23,3 +23,9 @@ vim.api.nvim_create_autocmd("TermOpen", {
 
 -- Atalho fácil para abrir o terminal horizontal
 vim.keymap.set("n", "<leader>th", "<cmd>ToggleTerm direction=horizontal<cr>", { desc = "Terminal Horizontal" })
+
+-- Selecionar tudo com Ctrl + a no Modo Normal
+vim.keymap.set("n", "<leader>ca", "ggVG", { desc = "Selecionar todo o texto" })
+
+-- Salvar o arquivo com Space + w
+vim.keymap.set("n", "<leader>ww", "<cmd>w<cr>", { desc = "Salvar arquivo" })

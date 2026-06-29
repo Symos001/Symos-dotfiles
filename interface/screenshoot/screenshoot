@@ -1,0 +1,59 @@
+#!/bin/bash
+# =============================================================================
+# Screenshot script com Hyprshot + SwayNC
+# =============================================================================
+
+# ─── Configurações ──────────────────────────────────────────────────────────
+
+SCREENSHOT_DIR="$HOME/Pictures/Screenshots"
+mkdir -p "$SCREENSHOT_DIR"
+
+FILENAME="screenshot_$(date +%Y-%m-%d_%H-%M-%S).png"
+FILEPATH="$SCREENSHOT_DIR/$FILENAME"
+
+# ─── Funções ──────────────────────────────────────────────────────────────────
+
+send_notification() {
+    local msg="$1"
+    swaync-client -R  # Limpa notificações anteriores
+    notify-send "📸 Screenshot" "$msg" -t 3000 -i camera-photo
+}
+
+# ─── Modos ────────────────────────────────────────────────────────────────────
+
+case "$1" in
+    output)
+        hyprshot -m output -o "$SCREENSHOT_DIR" -f "$FILENAME"
+        send_notification "Screenshot da tela salvo: $FILENAME"
+        ;;
+    window)
+        hyprshot -m window -o "$SCREENSHOT_DIR" -f "$FILENAME"
+        send_notification "Screenshot da janela salvo: $FILENAME"
+        ;;
+    region)
+        hyprshot -m region -o "$SCREENSHOT_DIR" -f "$FILENAME"
+        send_notification "Screenshot da região salvo: $FILENAME"
+        ;;
+    region-copy)
+        hyprshot -m region -o "$SCREENSHOT_DIR" -f "$FILENAME" -c
+        send_notification "Screenshot da região copiado para área de transferência"
+        ;;
+    output-copy)
+        hyprshot -m output -o "$SCREENSHOT_DIR" -f "$FILENAME" -c
+        send_notification "Screenshot da tela copiado para área de transferência"
+        ;;
+    window-copy)
+        hyprshot -m window -o "$SCREENSHOT_DIR" -f "$FILENAME" -c
+        send_notification "Screenshot da janela copiado para área de transferência"
+        ;;
+    *)
+        echo "Uso: $0 {output|window|region|region-copy|output-copy|window-copy}"
+        exit 1
+        ;;
+esac
+
+# ─── Abrir arquivo com Gwenview ─────────────────────────────────────────────
+
+if [[ "$1" != *-copy ]] && [[ -f "$FILEPATH" ]]; then
+    gwenview "$FILEPATH" &
+fi

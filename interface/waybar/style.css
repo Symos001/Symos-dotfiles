@@ -1,0 +1,154 @@
+/* ~/.config/waybar/style.css
+   Tema: Terafox (Nightfox) — tons terrosos, azul petróleo/teal
+*/
+
+* {
+    font-family: "JetBrainsMono Nerd Font", "FiraCode Nerd Font", sans-serif;
+    font-size: 13px;
+    min-height: 0;
+}
+
+window#waybar {
+    /* CORES TRANSPARENTES */
+    background: rgba(31, 39, 41, 0.55);  /* Semitransparente */
+    /* OU PARA MAIS TRANSPARÊNCIA: */
+    /* background: rgba(31, 39, 41, 0.55); */
+    
+    color: #e6eaf2;
+    border-radius: 12px;
+    border: 1px solid rgba(58, 64, 70, 0.5);
+    
+    /* ESSENCIAL PARA O BLUR FUNCIONAR NO HYPRELAND */
+    /* Estas propriedades ajudam o Hyprland a reconhecer a transparência */
+    background-clip: padding-box;
+    background-origin: padding-box;
+}
+
+/* Para garantir que os módulos também sejam transparentes */
+#workspaces,
+#clock,
+#tray,
+#pulseaudio,
+#network,
+#bluetooth,
+#battery,
+#custom-power {
+    background: rgba(47, 50, 57, 0.5);  /* Módulos semitransparentes */
+    border-radius: 8px;
+    padding: 0 10px;
+    margin: 4px 2px;
+}
+
+/* Mantém o workspace com transparência */
+#workspaces {
+    background: rgba(47, 50, 57, 0.5);
+    border-radius: 8px;
+    margin: 4px 4px 4px 6px;
+    padding: 0 4px;
+}
+
+#workspaces button {
+    color: #71839b;
+    padding: 0 8px;
+    border-radius: 6px;
+}
+
+#workspaces button.active {
+    color: #1f2729;
+    background: #5a93aa;
+}
+
+#workspaces button:hover {
+    background: #434b53;
+    color: #e6eaf2;
+}
+
+#window {
+    color: #8ebaa9;
+    padding: 0 10px;
+}
+
+#clock {
+    background: rgba(47, 50, 57, 0.5);
+    color: #e6eaf2;
+    border-radius: 8px;
+    padding: 0 14px;
+    font-weight: bold;
+}
+
+#tray,
+#pulseaudio,
+#network,
+#bluetooth,
+#battery,
+#custom-power {
+    background: rgba(47, 50, 57, 0.5);
+    border-radius: 8px;
+    padding: 0 10px;
+    margin: 4px 2px;
+}
+
+#pulseaudio {
+    color: #8ebaa9;
+}
+
+#network {
+    color: #5a93aa;
+}
+
+#network.disconnected {
+    color: #c46d72;
+}
+
+#bluetooth {
+    color: #5a93aa;
+}
+
+#bluetooth.disabled,
+#bluetooth.off {
+    color: #71839b;
+}
+
+#battery {
+    color: #d6b87b;
+}
+
+#battery.warning {
+    color: #d6975b;
+}
+
+#battery.critical {
+    color: #c46d72;
+}
+
+#battery.charging {
+    color: #8ebaa9;
+}
+
+#custom-power {
+    color: #c46d72;
+    margin-right: 6px;
+    font-size: 15px;
+}
+
+#custom-power:hover {
+    background: #c46d72;
+    color: #1f2729;
+}
+
+#tray {
+    margin-right: 2px;
+}
+
+/* Tooltips também transparentes */
+tooltip {
+    background: rgba(47, 50, 57, 0.9);
+    border: 1px solid rgba(90, 147, 170, 0.5);
+    border-radius: 8px;
+}
+
+tooltip label {
+    color: #e6eaf2;
+}
+
+

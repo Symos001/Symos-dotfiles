@@ -1,0 +1,5 @@
+# Dependências Python
+typing-extensions>=4.0.0
+dataclasses>=0.6
+pathlib>=1.0.1
+pytest>= 9.1.1

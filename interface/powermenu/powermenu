@@ -1,0 +1,8 @@
+#!/bin/bash
+# Menu de power usando Wlogout
+
+# Fecha o wlogout se já estiver aberto
+pkill wlogout 2>/dev/null
+
+# Abre o wlogout com confirmação de layout
+wlogout --protocol layer-shell -l ~/.config/wlogout/layout
