@@ -1,0 +1,35 @@
+#!/bin/bash
+# =============================================================================
+# Reload All — Recarrega todos os serviços
+# =============================================================================
+
+echo "🔄 Recarregando todos os serviços..."
+
+# Hyprpaper
+pkill hyprpaper 2>/dev/null
+hyprpaper &
+echo "  ✅ Hyprpaper recarregado"
+
+# Hyprland
+hyprctl reload
+echo "  ✅ Hyprland recarregado"
+
+# Waybar
+pkill waybar 2>/dev/null
+sleep 0.5
+waybar &
+echo "  ✅ Waybar recarregado"
+
+# SwayNC
+pkill swaync 2>/dev/null
+sleep 0.5
+swaync &
+echo "  ✅ SwayNC recarregado"
+
+# Hypridle
+pkill hypridle 2>/dev/null
+hypridle &
+echo "  ✅ Hypridle recarregado"
+
+notify-send "🔄 Zennit-OS" "Todos os serviços recarregados!" -t 3000
+echo "✅ Todos os serviços recarregados!"
